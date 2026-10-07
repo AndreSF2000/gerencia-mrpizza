@@ -451,6 +451,7 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     assert.equal(prepared.status, 200);
     assert.equal(prepared.body.pendingOperation.type, 'bulk_update_schedule');
     assert.match(prepared.body.pendingOperation.summary, /4 células/);
+    assert.doesNotMatch(prepared.body.pendingOperation.summary, /script/);
     assert.equal(scheduleEntries.length, 0);
 
     const postsBeforeConfirm = calls.filter(call => call.service === 'supabase'
@@ -460,6 +461,8 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     }, sessionHeaders);
     assert.equal(confirmed.status, 200);
     assert.match(confirmed.body.message, /4 células/);
+    assert.equal(confirmed.body.affectedCells.length, 4);
+    assert.equal(confirmed.body.affectedCells.every(cell => cell.date.startsWith('2026-09-')), true);
     assert.equal(scheduleEntries.length, 4);
     assert.equal(scheduleEntries.every(entry => entry.shift === 'unset' && entry.custom_shift === null), true);
     assert.equal(scheduleEntries.every(entry => entry.source === 'ai'), true);
@@ -468,6 +471,7 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
   });
 
   await t.test('exposes bulk planning as a structured OpenRouter tool', async () => {
+    scheduleEntries.splice(0, scheduleEntries.length);
     const previousKey = process.env.OPENROUTER_API_KEY;
     const previousModels = process.env.OPENROUTER_MODELS;
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
@@ -502,13 +506,47 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
       assert.equal(response.body.pendingOperation.type, 'bulk_update_schedule');
       const providerCall = calls.findLast(call => call.service === 'openrouter');
       assert.ok(providerCall.body.tools.some(tool => tool.function.name === 'prepare_bulk_schedule_update'));
-      assert.equal(scheduleEntries.length, 4);
+      assert.equal(scheduleEntries.length, 0);
     } finally {
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previousKey;
       if (previousModels === undefined) delete process.env.OPENROUTER_MODELS;
       else process.env.OPENROUTER_MODELS = previousModels;
     }
+  });
+
+  await t.test('sanitizes custom shift text and returns affected cells after batch confirmation', async () => {
+    scheduleMonth = null;
+    scheduleEntries.splice(0, scheduleEntries.length);
+    enqueueCall('prepare_bulk_schedule_update', {
+      employee_names: ['Rita Sousa'],
+      start_date: '2026-09-12',
+      end_date: '2026-09-12',
+      action: 'set',
+      shift: 'custom',
+      custom_shift: '<script>alert(1)</script>10:00-14:00'
+    });
+    const prepared = await request('/api/chat', {
+      message: 'Coloca a Rita em horário personalizado dia 12',
+      history: [],
+      month: 9,
+      year: 2026
+    }, sessionHeaders);
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.pendingOperation.type, 'bulk_update_schedule');
+    assert.doesNotMatch(prepared.body.pendingOperation.summary, /<script>|alert/);
+    const confirmed = await request('/api/confirm-operation', {
+      pendingOperationId: prepared.body.pendingOperation.id
+    }, sessionHeaders);
+    assert.equal(confirmed.status, 200);
+    assert.equal(scheduleEntries.length, 1);
+    assert.equal(scheduleEntries[0].custom_shift, '10:00-14:00');
+    assert.deepEqual(confirmed.body.affectedCells, [{
+      employee_id: ritaId,
+      date: '2026-09-12',
+      shift: 'unset',
+      custom_shift: '10:00-14:00'
+    }]);
   });
 
   await t.test('rejects unresolved employee names without preparing a partial batch', async () => {

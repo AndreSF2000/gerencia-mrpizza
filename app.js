@@ -187,7 +187,7 @@ function renderSchedule() {
     const customText = customShiftOverrides[key] || '';
     const value = customText ? 'unset' : scheduleCleared ? (manualOverrides[key] || 'unset') : (manualOverrides[key] || defaultCell(person, personIndex, date, dates));
     const label = customText || (value === 'unset' ? 'Sem horário' : value === 'off' ? 'Folga' : value === 'evening' ? 'Turno da noite' : 'Turno do dia');
-    return `<button class="schedule-cell editable-cell${customText ? ' has-custom-shift' : ''}" data-person="${escapeHtml(person.name)}" data-date="${date.getDate()}" data-value="${value}" title="Clique para percorrer turnos · duplo clique ou toque prolongado para escrever" aria-label="${escapeHtml(person.name)}, dia ${date.getDate()}: ${escapeHtml(label)}">${cellMarkup(value, date, customText)}</button>`;
+    return `<button class="schedule-cell editable-cell${customText ? ' has-custom-shift' : ''}" data-person="${escapeHtml(person.name)}" data-employee-id="${escapeHtml(person.id || '')}" data-date="${date.getDate()}" data-work-date="${formatLocalDate(date)}" data-value="${value}" title="Clique para percorrer turnos · duplo clique ou toque prolongado para escrever" aria-label="${escapeHtml(person.name)}, dia ${date.getDate()}: ${escapeHtml(label)}">${cellMarkup(value, date, customText)}</button>`;
   }).join('')}</div>`).join('');
   document.getElementById('monthly-schedule').innerHTML = head + rows;
   renderCoverage();
@@ -195,6 +195,19 @@ function renderSchedule() {
   renderOverview();
 }
 function toast(message) { document.getElementById('toast-message').textContent = message; document.getElementById('toast').classList.add('show'); setTimeout(() => document.getElementById('toast').classList.remove('show'), 2600); }
+
+function highlightUpdatedScheduleCells(affectedCells) {
+  if (!Array.isArray(affectedCells)) return;
+  const updatedKeys = new Set(affectedCells.map(cell => `${cell.employee_id}|${cell.date}`));
+  document.querySelectorAll('#monthly-schedule .schedule-cell').forEach(cell => {
+    if (!updatedKeys.has(`${cell.dataset.employeeId}|${cell.dataset.workDate}`)) return;
+    cell.classList.remove('cell-updated');
+    void cell.offsetWidth;
+    cell.classList.add('cell-updated');
+    setTimeout(() => cell.classList.remove('cell-updated'), 2000);
+  });
+}
+
 async function generateSchedule() {
   if ((generated || scheduleCleared || Object.keys(manualOverrides).length)
     && !window.confirm(`Substituir a escala existente de ${monthNames[currentMonth]} ${currentYear}?`)) return;
@@ -927,6 +940,7 @@ async function confirmAssistantOperation(operationId) {
       renderTeam();
       renderSchedule();
       renderOverview();
+      highlightUpdatedScheduleCells(result.affectedCells);
       addAiMessage(`<strong>Mr Pizza IA</strong><p>${escapeHtml(result.message)}</p>`);
     } catch (refreshError) {
       console.error('Assistant operation saved but UI refresh failed:', refreshError.name);

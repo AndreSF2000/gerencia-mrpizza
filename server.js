@@ -229,6 +229,17 @@ function cleanText(value, maxLength = 100) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
 }
 
+function sanitizeShiftInput(value) {
+  if (typeof value !== 'string') return null;
+  const sanitized = value
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 50);
+  return sanitized || null;
+}
+
 function formatDateInZone(date = new Date()) {
   const values = new Intl.DateTimeFormat('en-CA', {
     timeZone: appTimeZone,
@@ -528,9 +539,8 @@ async function prepareBulkScheduleUpdate(session, args, context) {
   let customShift = null;
   if (args.action === 'set') {
     if (args.shift === 'custom') {
-      customShift = cleanText(args.custom_shift, 100);
+      customShift = sanitizeShiftInput(args.custom_shift);
       if (!customShift) return assistantResult('Indica o texto do horário personalizado, até 50 caracteres.');
-      if (customShift.length > 50) return assistantResult('O horário personalizado pode ter no máximo 50 caracteres.');
     } else if (['morning', 'evening', 'off'].includes(args.shift)) {
       shift = args.shift;
     } else {
@@ -990,6 +1000,7 @@ async function executeConfirmedOperation(session, operationId) {
   console.info(`[confirm-operation] type=${command.operation}`);
   const employees = await getActiveEmployees(session);
   let message = 'A operação foi concluída.';
+  let affectedCells = null;
 
   if (command.operation === 'create_employee') {
     const name = cleanText(command.name, 80);
@@ -1059,7 +1070,8 @@ async function executeConfirmedOperation(session, operationId) {
     const employeeById = new Map(employees.map(employee => [employee.id, employee]));
     const selected = [...new Set(ids)];
     const rangeDates = dates.length ? makeDateRange(dates[0], dates[dates.length - 1]) : null;
-    const isCustom = typeof command.customShift === 'string' && command.customShift.trim().length > 0;
+    const customShift = sanitizeShiftInput(command.customShift);
+    const isCustom = Boolean(customShift);
     const validSetTarget = isCustom
       ? command.shift === 'unset'
       : ['morning', 'evening', 'off'].includes(command.shift);
@@ -1077,14 +1089,14 @@ async function executeConfirmedOperation(session, operationId) {
       || !['set', 'clear'].includes(command.action)
       || (command.action === 'set' && !validSetTarget)
       || (command.action === 'clear' && command.customShift != null)
-      || (isCustom && cleanText(command.customShift, 50) !== command.customShift.trim())) {
+      || (command.customShift != null && !customShift)) {
       const error = new Error('Bulk schedule change is invalid');
       error.status = 400;
       error.publicCode = 'invalid_schedule_change';
       throw error;
     }
-    const customShift = command.action === 'set' && isCustom ? cleanText(command.customShift, 50) : null;
-    const effectiveShift = command.action === 'clear' ? 'unset' : customShift ? 'unset' : targetShift;
+    const effectiveCustomShift = command.action === 'set' && isCustom ? customShift : null;
+    const effectiveShift = command.action === 'clear' ? 'unset' : effectiveCustomShift ? 'unset' : targetShift;
     let schedule = await getScheduleMonth(session, Number(command.year), Number(command.month));
     let existingEntries = [];
     if (schedule) {
@@ -1120,7 +1132,7 @@ async function executeConfirmedOperation(session, operationId) {
       employee_id: employeeId,
       work_date: date,
       shift: effectiveShift,
-      custom_shift: customShift,
+      custom_shift: effectiveCustomShift,
       source: 'ai'
     })));
     await supabaseFetch(session.token, '/rest/v1/schedule_entries?on_conflict=schedule_month_id,employee_id,work_date', {
@@ -1128,6 +1140,12 @@ async function executeConfirmedOperation(session, operationId) {
       prefer: 'resolution=merge-duplicates,return=minimal',
       body: rowsToUpsert
     });
+    affectedCells = rowsToUpsert.map(entry => ({
+      employee_id: entry.employee_id,
+      date: entry.work_date,
+      shift: entry.shift,
+      custom_shift: entry.custom_shift
+    }));
     const names = selected.map(id => employeeById.get(id).name);
     message = `Foram atualizadas ${rowsToUpsert.length} células para ${names.join(', ')} entre ${dates[0].slice(8, 10)}/${dates[0].slice(5, 7)} e ${dates[dates.length - 1].slice(8, 10)}/${dates[dates.length - 1].slice(5, 7)}/${command.year}.`;
   } else if (command.operation === 'update_shift_assignment') {
@@ -1243,7 +1261,9 @@ async function executeConfirmedOperation(session, operationId) {
   }
 
   await markOperationComplete(session, operationId);
-  return assistantResult(message);
+  const result = assistantResult(message);
+  if (affectedCells) result.affectedCells = affectedCells;
+  return result;
 }
 
 async function confirmOperation(session, operationId) {
