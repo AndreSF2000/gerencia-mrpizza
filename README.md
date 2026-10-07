@@ -112,6 +112,9 @@ os termos do Google; várias chaves não aumentam nem contornam a quota do proje
   confirmação.
 - Também é possível pedir à IA para gerar o mês completo; a IA pede
   confirmação antes de executar a geração automática.
+- A IA pode preparar uma única alteração em lote para vários funcionários e um
+  intervalo de datas. Confere o número de células e os nomes na proposta antes
+  de confirmar; a gravação é feita num único upsert autenticado.
 - A IA abre num balão flutuante em qualquer área do site e permanece na aba
   atual. Pode pedir pelo chat alterações na escala e ações sobre a equipa,
   como adicionar ou remover funcionários; todas as ações pedem confirmação.

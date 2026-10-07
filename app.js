@@ -763,7 +763,7 @@ async function getAssistantRequestHeaders() {
 }
 
 function sanitizePendingOperation(operation) {
-  const allowedTypes = new Set(['create_employee', 'update_employee', 'delete_employee', 'update_shift_assignment', 'generate_schedule']);
+  const allowedTypes = new Set(['create_employee', 'update_employee', 'delete_employee', 'update_shift_assignment', 'bulk_update_schedule', 'generate_schedule']);
   if (!operation || typeof operation !== 'object' || !/^[0-9a-f-]{36}$/i.test(operation.id || '')
     || !allowedTypes.has(operation.type) || typeof operation.summary !== 'string'
     || typeof operation.expiresAt !== 'string') return null;

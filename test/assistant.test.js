@@ -433,6 +433,128 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     assert.match(duplicate.body.message, /Já existe uma folga/);
   });
 
+  await t.test('prepares a single confirmed batch to clear a date range for named employees', async () => {
+    scheduleMonth = null;
+    scheduleEntries.splice(0, scheduleEntries.length);
+    enqueueCall('prepare_bulk_schedule_update', {
+      employee_names: ['Rita Sousa', 'Carlos Silva'],
+      start_date: '2026-09-10',
+      end_date: '2026-09-11',
+      action: 'clear'
+    });
+    const prepared = await request('/api/chat', {
+      message: 'deixa os horários da Rita e do Carlos vazios de 10 a 11 de setembro',
+      history: [],
+      month: 9,
+      year: 2026
+    }, sessionHeaders);
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.pendingOperation.type, 'bulk_update_schedule');
+    assert.match(prepared.body.pendingOperation.summary, /4 células/);
+    assert.equal(scheduleEntries.length, 0);
+
+    const postsBeforeConfirm = calls.filter(call => call.service === 'supabase'
+      && call.method === 'POST' && call.path.startsWith('/rest/v1/schedule_entries')).length;
+    const confirmed = await request('/api/confirm-operation', {
+      pendingOperationId: prepared.body.pendingOperation.id
+    }, sessionHeaders);
+    assert.equal(confirmed.status, 200);
+    assert.match(confirmed.body.message, /4 células/);
+    assert.equal(scheduleEntries.length, 4);
+    assert.equal(scheduleEntries.every(entry => entry.shift === 'unset' && entry.custom_shift === null), true);
+    assert.equal(scheduleEntries.every(entry => entry.source === 'ai'), true);
+    assert.equal(calls.filter(call => call.service === 'supabase'
+      && call.method === 'POST' && call.path.startsWith('/rest/v1/schedule_entries')).length, postsBeforeConfirm + 1);
+  });
+
+  await t.test('exposes bulk planning as a structured OpenRouter tool', async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    const previousModels = process.env.OPENROUTER_MODELS;
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.OPENROUTER_MODELS = '["openai/gpt-4o"]';
+    openRouterResponses.push({
+      body: {
+        choices: [{
+          message: {
+            tool_calls: [{
+              function: {
+                name: 'prepare_bulk_schedule_update',
+                arguments: JSON.stringify({
+                  employee_names: ['Rita Sousa', 'Carlos Silva'],
+                  start_date: '2026-09-10',
+                  end_date: '2026-09-11',
+                  action: 'clear'
+                })
+              }
+            }]
+          }
+        }]
+      }
+    });
+    try {
+      const response = await request('/api/chat', {
+        message: 'deixa vazios os horários da Rita e do Carlos de 10 a 11 de setembro',
+        history: [],
+        month: 9,
+        year: 2026
+      }, sessionHeaders);
+      assert.equal(response.status, 200);
+      assert.equal(response.body.pendingOperation.type, 'bulk_update_schedule');
+      const providerCall = calls.findLast(call => call.service === 'openrouter');
+      assert.ok(providerCall.body.tools.some(tool => tool.function.name === 'prepare_bulk_schedule_update'));
+      assert.equal(scheduleEntries.length, 4);
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousKey;
+      if (previousModels === undefined) delete process.env.OPENROUTER_MODELS;
+      else process.env.OPENROUTER_MODELS = previousModels;
+    }
+  });
+
+  await t.test('rejects unresolved employee names without preparing a partial batch', async () => {
+    scheduleEntries.splice(0, scheduleEntries.length);
+    enqueueCall('prepare_bulk_schedule_update', {
+      employee_names: ['Rita Sousa', 'Funcionário Inexistente'],
+      start_date: '2026-09-10',
+      end_date: '2026-09-11',
+      action: 'clear'
+    });
+    const prepared = await request('/api/chat', {
+      message: 'limpa a escala da Rita e de alguém',
+      history: [],
+      month: 9,
+      year: 2026
+    }, sessionHeaders);
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.pendingOperation, null);
+    assert.match(prepared.body.message, /não preparei nenhuma alteração/);
+    assert.equal(scheduleEntries.length, 0);
+  });
+
+  await t.test('validates leave limits for every employee before writing a batch', async () => {
+    scheduleMonth = null;
+    scheduleEntries.splice(0, scheduleEntries.length);
+    enqueueCall('prepare_bulk_schedule_update', {
+      employee_names: ['Rita Sousa'],
+      start_date: '2026-09-01',
+      end_date: '2026-09-08',
+      action: 'set',
+      shift: 'off'
+    });
+    const prepared = await request('/api/chat', {
+      message: 'marca folga para a Rita de 1 a 8 de setembro',
+      history: [],
+      month: 9,
+      year: 2026
+    }, sessionHeaders);
+    const confirmed = await request('/api/confirm-operation', {
+      pendingOperationId: prepared.body.pendingOperation.id
+    }, sessionHeaders);
+    assert.equal(confirmed.status, 409);
+    assert.equal(confirmed.body.code, 'monthly_leave_limit');
+    assert.equal(scheduleEntries.length, 0);
+  });
+
   await t.test('rejects impossible calendar dates before preparing a schedule change', async () => {
     scheduleEntries.splice(0, scheduleEntries.length);
     enqueueCall('prepare_data_operation', {

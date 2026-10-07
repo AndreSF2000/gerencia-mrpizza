@@ -103,6 +103,26 @@ const aiTools = [{
       required: ['query_type']
     }
   }, {
+    name: 'prepare_bulk_schedule_update',
+    description: 'Prepara UMA única operação em lote para vários funcionários e vários dias. Use obrigatoriamente para pedidos com "todos", vários nomes ou intervalos de datas. Nunca divide o pedido em várias confirmações; a operação fica pendente até o gerente confirmar.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        all_employees: { type: SchemaType.BOOLEAN, description: 'Definir true apenas quando o utilizador disser todos/toda a equipa.' },
+        employee_names: {
+          type: SchemaType.ARRAY,
+          items: { type: SchemaType.STRING },
+          description: 'Nomes dos funcionários ativos exatamente como fornecidos no contexto. Ignorado quando all_employees é true.'
+        },
+        start_date: { type: SchemaType.STRING, description: 'Primeiro dia do intervalo inclusive, ISO YYYY-MM-DD.' },
+        end_date: { type: SchemaType.STRING, description: 'Último dia do intervalo inclusive, ISO YYYY-MM-DD.' },
+        action: { type: SchemaType.STRING, enum: ['set', 'clear'], description: 'set define os turnos; clear deixa as células sem horário.' },
+        shift: { type: SchemaType.STRING, enum: ['morning', 'evening', 'off', 'custom'], description: 'Turno a definir quando action=set.' },
+        custom_shift: { type: SchemaType.STRING, description: 'Texto livre até 50 caracteres quando shift=custom.' }
+      },
+      required: ['start_date', 'end_date', 'action']
+    }
+  }, {
     name: 'prepare_data_operation',
     description: 'Prepara uma proposta de escrita e aguarda confirmação explícita. Nunca executa a escrita.',
     parameters: {
@@ -132,7 +152,9 @@ Usa assistant_ui_action para navegar nas secções overview, schedule e team; pe
 
 Usa query_team_data para responder a perguntas factuais sobre funcionários, folgas, escala de hoje ou cobertura. Baseia-te apenas nos dados devolvidos pela aplicação. Nunca inventes funcionários, datas, IDs, resultados ou cobertura.
 
-Usa prepare_data_operation apenas se o utilizador pedir claramente uma alteração de dados: criar/editar/remover funcionário, marcar folga, alterar turno, gerar ou publicar horário. Essa ferramenta só cria uma proposta pendente que o utilizador terá de confirmar explicitamente; nunca executa a alteração. Se faltarem dados necessários, pede esclarecimento em texto em vez de inventar.
+Usa prepare_bulk_schedule_update obrigatoriamente quando o utilizador pedir uma alteração para vários funcionários, para todos, ou para um intervalo de dias. Resolve nomes apenas com a lista de funcionários ativos fornecida pela aplicação. Prepara um único lote e uma única confirmação; não simules ações individuais nem declares que a alteração foi executada.
+
+Usa prepare_data_operation para uma alteração individual ou para criar/editar/remover funcionário, gerar ou publicar horário. As ferramentas de escrita só criam propostas pendentes que o gerente terá de confirmar explicitamente; nunca executam a escrita. Antes de apresentar a proposta, resume concisamente quantas células, quem e que intervalo serão afetados e pergunta se confirma. Se faltar nome, intervalo ou turno necessário, pede esclarecimento em vez de inventar ou escrever apenas uma parte.
 
 Publicar horários não é suportado pelo schema atual; informa essa limitação em vez de alegar sucesso. Nunca afirmes que uma alteração foi gravada antes de a confirmação e a escrita no servidor terminarem. Nunca peças, reveles ou exponhas chaves, palavras-passe, tokens ou outros segredos. Respostas sem ferramenta são texto normal, sem JSON.`;
 
@@ -478,6 +500,92 @@ async function queryTeamData(session, args, context) {
   return assistantResult('Não consegui identificar essa consulta.');
 }
 
+function makeDateRange(startDate, endDate) {
+  if (!isValidIsoDate(startDate) || !isValidIsoDate(endDate) || startDate > endDate) return null;
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const dates = [];
+  for (const date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
+    dates.push(date.toISOString().slice(0, 10));
+    if (dates.length > 31) return null;
+  }
+  return dates;
+}
+
+async function prepareBulkScheduleUpdate(session, args, context) {
+  const dates = makeDateRange(String(args.start_date || ''), String(args.end_date || ''));
+  if (!dates) return assistantResult('Indica um intervalo válido de datas, com início anterior ao fim e no máximo 31 dias.');
+  const year = Number(dates[0].slice(0, 4));
+  const month = Number(dates[0].slice(5, 7));
+  if (dates.some(date => Number(date.slice(0, 4)) !== context.year
+    || Number(date.slice(0, 4)) !== year || Number(date.slice(5, 7)) !== month)) {
+    return assistantResult(`O intervalo tem de ficar dentro de um único mês do ano ${context.year}.`);
+  }
+  if (!['set', 'clear'].includes(args.action)) {
+    return assistantResult('Indica se queres definir um turno ou deixar os campos sem horário.');
+  }
+  let shift = 'unset';
+  let customShift = null;
+  if (args.action === 'set') {
+    if (args.shift === 'custom') {
+      customShift = cleanText(args.custom_shift, 100);
+      if (!customShift) return assistantResult('Indica o texto do horário personalizado, até 50 caracteres.');
+      if (customShift.length > 50) return assistantResult('O horário personalizado pode ter no máximo 50 caracteres.');
+    } else if (['morning', 'evening', 'off'].includes(args.shift)) {
+      shift = args.shift;
+    } else {
+      return assistantResult('Indica se queres o turno do dia, da noite, folga ou um texto personalizado.');
+    }
+  }
+
+  const activeEmployees = await getActiveEmployees(session);
+  let selectedEmployees;
+  if (args.all_employees === true) {
+    selectedEmployees = activeEmployees;
+  } else {
+    const requestedNames = Array.isArray(args.employee_names)
+      ? [...new Set(args.employee_names.map(name => cleanText(name, 80)).filter(Boolean))]
+      : [];
+    if (!requestedNames.length || requestedNames.length > 100) {
+      return assistantResult('Indica um ou mais nomes exatos, ou confirma que a alteração é para toda a equipa.');
+    }
+    const missingNames = requestedNames.filter(name => !findEmployee(activeEmployees, name));
+    if (missingNames.length) {
+      return assistantResult(`Não encontrei ${missingNames.join(', ')} na equipa ativa; não preparei nenhuma alteração. Confirma os nomes.`);
+    }
+    selectedEmployees = [...new Map(requestedNames
+      .map(name => findEmployee(activeEmployees, name))
+      .map(employee => [employee.id, employee])).values()];
+  }
+  if (!selectedEmployees.length) return assistantResult('Não há funcionários ativos para alterar.');
+  if (selectedEmployees.length * dates.length > 500) {
+    return assistantResult(`Este lote abrangeria ${selectedEmployees.length * dates.length} células. O limite seguro é 500 células por confirmação; reduz a equipa ou o intervalo.`);
+  }
+
+  const employeeNames = selectedEmployees.map(employee => employee.name);
+  const shiftLabel = args.action === 'clear' ? 'deixar sem horário'
+    : customShift ? `definir "${customShift}"`
+      : shift === 'morning' ? 'definir o turno do dia'
+        : shift === 'evening' ? 'definir o turno da noite' : 'marcar folga';
+  const lastDate = dates[dates.length - 1];
+  const rangeLabel = `${dates[0].slice(8, 10)}/${dates[0].slice(5, 7)} a ${lastDate.slice(8, 10)}/${lastDate.slice(5, 7)}/${year}`;
+  const namesLabel = employeeNames.length <= 6
+    ? employeeNames.join(', ')
+    : `${employeeNames.slice(0, 5).join(', ')} e mais ${employeeNames.length - 5}`;
+  const summary = `${shiftLabel} para ${employeeNames.length} funcionário(s) (${namesLabel}) de ${rangeLabel}, total ${employeeNames.length * dates.length} células`;
+  return createPendingOperation(session, {
+    operation: 'bulk_update_schedule',
+    employeeIds: selectedEmployees.map(employee => employee.id),
+    employeeNames,
+    dates,
+    shift,
+    customShift,
+    action: args.action,
+    month,
+    year
+  }, summary, 'bulk_update_schedule');
+}
+
 async function prepareOperation(session, args, context) {
   const operation = args.operation;
   if (operation === 'publish_schedule') {
@@ -590,6 +698,9 @@ async function processFunctionCall(session, call, context) {
   }
   if (call.name === 'query_team_data') {
     return queryTeamData(session, call.args || {}, context);
+  }
+  if (call.name === 'prepare_bulk_schedule_update') {
+    return prepareBulkScheduleUpdate(session, call.args || {}, context);
   }
   if (call.name === 'prepare_data_operation') {
     return prepareOperation(session, call.args || {}, context);
@@ -942,6 +1053,83 @@ async function executeConfirmedOperation(session, operationId) {
       body: patch
     });
     message = 'O perfil do funcionário foi atualizado.';
+  } else if (command.operation === 'bulk_update_schedule') {
+    const ids = Array.isArray(command.employeeIds) ? command.employeeIds : [];
+    const dates = Array.isArray(command.dates) ? command.dates : [];
+    const employeeById = new Map(employees.map(employee => [employee.id, employee]));
+    const selected = [...new Set(ids)];
+    const rangeDates = dates.length ? makeDateRange(dates[0], dates[dates.length - 1]) : null;
+    const isCustom = typeof command.customShift === 'string' && command.customShift.trim().length > 0;
+    const validSetTarget = isCustom
+      ? command.shift === 'unset'
+      : ['morning', 'evening', 'off'].includes(command.shift);
+    const targetShift = command.action === 'clear' ? 'unset' : isCustom ? 'unset' : command.shift;
+    if (!selected.length || selected.length !== ids.length || selected.length > 100
+      || selected.some(id => !isUuid(id) || !employeeById.has(id))
+      || !rangeDates || rangeDates.length !== dates.length
+      || dates.some((date, index) => date !== rangeDates[index])
+      || dates.length > 31 || selected.length * dates.length > 500
+      || dates.some(date => !isValidIsoDate(date)
+        || Number(date.slice(0, 4)) !== Number(command.year)
+        || Number(date.slice(5, 7)) !== Number(command.month))
+      || !Number.isInteger(Number(command.year)) || Number(command.year) < 2020 || Number(command.year) > 2100
+      || !Number.isInteger(Number(command.month)) || Number(command.month) < 1 || Number(command.month) > 12
+      || !['set', 'clear'].includes(command.action)
+      || (command.action === 'set' && !validSetTarget)
+      || (command.action === 'clear' && command.customShift != null)
+      || (isCustom && cleanText(command.customShift, 50) !== command.customShift.trim())) {
+      const error = new Error('Bulk schedule change is invalid');
+      error.status = 400;
+      error.publicCode = 'invalid_schedule_change';
+      throw error;
+    }
+    const customShift = command.action === 'set' && isCustom ? cleanText(command.customShift, 50) : null;
+    const effectiveShift = command.action === 'clear' ? 'unset' : customShift ? 'unset' : targetShift;
+    let schedule = await getScheduleMonth(session, Number(command.year), Number(command.month));
+    let existingEntries = [];
+    if (schedule) {
+      existingEntries = await supabaseFetch(session.token,
+        `/rest/v1/schedule_entries?schedule_month_id=eq.${schedule.id}&select=employee_id,work_date,shift`);
+    }
+    if (effectiveShift === 'off') {
+      const settings = await supabaseFetch(session.token,
+        `/rest/v1/workspace_settings?workspace_id=eq.${session.workspaceId}&select=monthly_days_off`);
+      const leaveLimit = Number(settings?.[0]?.monthly_days_off ?? 7);
+      const selectedIds = new Set(selected);
+      const changedDates = new Set(dates);
+      const offDatesByEmployee = new Map(selected.map(id => [id, new Set()]));
+      (existingEntries || []).forEach(entry => {
+        if (selectedIds.has(entry.employee_id) && entry.shift === 'off' && !changedDates.has(entry.work_date)) {
+          offDatesByEmployee.get(entry.employee_id).add(entry.work_date);
+        }
+      });
+      selected.forEach(id => {
+        dates.forEach(date => offDatesByEmployee.get(id).add(date));
+        if (offDatesByEmployee.get(id).size > leaveLimit) {
+          const error = new Error(`Bulk schedule change exceeds monthly leave limit for ${employeeById.get(id).name}`);
+          error.status = 409;
+          error.publicCode = 'monthly_leave_limit';
+          throw error;
+        }
+      });
+    }
+    if (!schedule) schedule = await getScheduleMonth(session, Number(command.year), Number(command.month), true);
+    if (!schedule?.id) throw new Error('Schedule month could not be prepared');
+    const rowsToUpsert = selected.flatMap(employeeId => dates.map(date => ({
+      schedule_month_id: schedule.id,
+      employee_id: employeeId,
+      work_date: date,
+      shift: effectiveShift,
+      custom_shift: customShift,
+      source: 'ai'
+    })));
+    await supabaseFetch(session.token, '/rest/v1/schedule_entries?on_conflict=schedule_month_id,employee_id,work_date', {
+      method: 'POST',
+      prefer: 'resolution=merge-duplicates,return=minimal',
+      body: rowsToUpsert
+    });
+    const names = selected.map(id => employeeById.get(id).name);
+    message = `Foram atualizadas ${rowsToUpsert.length} células para ${names.join(', ')} entre ${dates[0].slice(8, 10)}/${dates[0].slice(5, 7)} e ${dates[dates.length - 1].slice(8, 10)}/${dates[dates.length - 1].slice(5, 7)}/${command.year}.`;
   } else if (command.operation === 'update_shift_assignment') {
     console.info(`[confirm-operation] employeeId=${isUuid(command.employeeId) ? command.employeeId : 'invalid'} date=${cleanText(command.date, 10) || 'missing'}`);
     if (!isUuid(command.employeeId)
