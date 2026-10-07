@@ -1,0 +1,16 @@
+{
+  "name": "mr-pizza-gestao",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^18.0.4",
+    "pdfkit": "^0.20.2"
+  }
+}

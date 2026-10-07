@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mr Pizza | Gestão de equipa</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="enhancements.css">
+</head>
+<body>
+  <div class="auth-overlay" id="auth-overlay">
+    <form class="auth-card" id="auth-form">
+      <div class="brand-mark">MP</div>
+      <h1>Entrar no Mr Pizza</h1>
+      <p>Use a conta do gerente para aceder à gestão da equipa.</p>
+      <input id="auth-email" type="email" autocomplete="username" placeholder="Email do gerente" required>
+      <div class="password-input-wrapper">
+        <input id="auth-password" type="password" autocomplete="current-password" placeholder="Palavra-passe" aria-label="Palavra-passe" required>
+        <button class="password-visibility-toggle" id="toggle-password-visibility" type="button" aria-controls="auth-password" aria-pressed="false">Mostrar</button>
+      </div>
+      <button class="primary-button" type="submit">Entrar</button>
+      <p class="auth-error" id="auth-error"></p>
+    </form>
+  </div>
+  <div class="app-shell" inert>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">MP</div>
+        <div><strong>mr pizza</strong><span>gestão de equipa</span></div>
+      </div>
+      <div class="sidebar-label">Menu principal</div>
+      <nav class="main-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">▦</span> Visão geral</button>
+        <button class="nav-item" data-view="schedule"><span class="nav-icon">◫</span> Horários</button>
+        <button class="nav-item" data-view="team"><span class="nav-icon">♙</span> Equipa</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="rule-card">
+          <div class="rule-title"><span class="status-dot"></span> Regras ativas</div>
+          <p>2 turnos por dia · 7 folgas/mês</p>
+          <p>Dom–Qui: 11:00–18:00 e 18:00–00:00</p>
+          <p>Sex–Sáb: 11:00–19:00 e 19:00–02:00</p>
+        </div>
+        <div class="user-mini"><div class="avatar avatar-manager" id="sidebar-user-avatar">D</div><div><strong id="sidebar-user-name">Gerente</strong><span>Gerente</span></div></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumb"><span>Mr Pizza</span><i>/</i><strong id="page-title">Visão geral</strong></div>
+        <div class="top-actions"><span class="manager-email" id="manager-email"></span><button class="outline-button" id="sign-out" type="button">Sair</button></div>
+      </header>
+
+      <section class="view active-view" id="overview-view">
+        <div class="page-heading"><div><p class="eyebrow">A carregar data...</p><h1>Bom dia, Doka <span>👋</span></h1><p class="subheading">Aqui está o pulso da sua equipa para hoje.</p></div><button class="primary-button" id="generate-overview"><span>✦</span> Gerar horário</button></div>
+        <div class="stats-grid">
+          <article class="stat-card accent-card"><div class="stat-top"><span>Equipa ativa</span><span class="stat-icon">♙</span></div><div class="stat-value" id="overview-team-count">0 <small>pessoas</small></div><div class="stat-note positive" id="overview-team-note">Sem funcionários</div></article>
+          <article class="stat-card"><div class="stat-top"><span>Turno de hoje</span><span class="stat-icon warm">◷</span></div><div class="stat-value" id="overview-working-count">0 <small>em serviço</small></div><div class="stat-note" id="overview-off-count">0 folgas programadas</div></article>
+          <article class="stat-card"><div class="stat-top"><span>Horário do mês</span><span class="stat-icon lilac">▤</span></div><div class="stat-value" id="overview-completion">0<small>% completo</small></div><div class="progress"><span id="overview-completion-bar" style="width:0%"></span></div><div class="stat-note" id="overview-month-label">A carregar mês...</div></article>
+          <article class="stat-card"><div class="stat-top"><span>Cobertura semanal</span><span class="stat-icon rose">◌</span></div><div class="stat-value" id="overview-coverage">0<small>% assegurada</small></div><div class="stat-note positive" id="overview-coverage-note">Sem equipa para cobrir turnos</div></article>
+        </div>
+        <div class="content-grid">
+          <article class="panel calendar-panel"><div class="panel-heading"><div><h2>Horário desta semana</h2><p id="overview-week-label">A carregar semana...</p></div><button class="text-button" data-view-target="schedule">Ver calendário <span>→</span></button></div><div class="week-strip" id="week-strip"></div><div class="shift-summary"><div class="shift-row"><span class="shift-pill lunch">Turno do dia</span><strong>11:00 — 18:00 (Dom–Qui) · 11:00 — 19:00 (Sex–Sáb)</strong><span class="shift-count" id="overview-morning-count">0 pessoas</span><div class="member-stack" id="overview-morning-members"></div></div><div class="shift-row"><span class="shift-pill dinner">Turno da noite</span><strong>18:00 — 00:00 (Dom–Qui) · 19:00 — 02:00 (Sex–Sáb)</strong><span class="shift-count" id="overview-evening-count">0 pessoas</span><div class="member-stack" id="overview-evening-members"></div></div></div></article>
+          <article class="panel activity-panel"><div class="panel-heading"><div><h2>Regras do horário</h2><p>Parâmetros usados pelo gerador</p></div><span class="status-label">Ativas</span></div><div class="rule-list"><div class="rule-line"><span class="rule-check">✓</span><div><strong>Horários de domingo a quinta</strong><p>11:00 — 18:00 e 18:00 — 00:00</p></div></div><div class="rule-line"><span class="rule-check">✓</span><div><strong>Horários de sexta e sábado</strong><p>11:00 — 19:00 e 19:00 — 02:00</p></div></div><div class="rule-line"><span class="rule-check">✓</span><div><strong>7 folgas por funcionário</strong><p>Geradas e validadas em cada mês</p></div></div></div><button class="outline-button full-width" data-view-target="schedule">Abrir gerador de horários</button></article>
+        </div>
+        <section class="panel team-preview"><div class="panel-heading"><div><h2>Estado da equipa</h2><p>Quem está a trabalhar hoje</p></div><button class="text-button" data-view-target="team">Ver equipa <span>→</span></button></div><div class="team-table"><div class="table-head"><span>FUNCIONÁRIO</span><span>TURNO DE HOJE</span><span>ESTADO</span><span>PRÓXIMA FOLGA</span></div><div id="team-preview-rows"></div></div></section>
+      </section>
+
+      <section class="view" id="schedule-view"><div class="page-heading"><div><p class="eyebrow">Planeamento inteligente</p><h1>Horários</h1><p class="subheading">Crie manualmente ou peça à IA para montar o mês.</p></div><div class="heading-actions"><button class="outline-button" id="export-schedule">↓ Excel</button><button class="outline-button" id="print-schedule">↓ Baixar PDF</button><button class="primary-button" id="generate-schedule"><span>✦</span> Gerar mês</button></div></div><div class="schedule-toolbar"><button class="month-arrow" id="prev-month">‹</button><strong id="month-label">A carregar mês...</strong><button class="month-arrow" id="next-month">›</button><span class="toolbar-divider"></span><span class="legend"><i class="legend-dot work"></i> Em turno</span><span class="legend"><i class="legend-dot off"></i> Folga</span><span class="toolbar-hint">Clique numa célula para editar</span></div><div class="schedule-workspace"><div class="panel schedule-table-panel"><div id="monthly-schedule" class="monthly-schedule"></div></div><aside class="panel ai-panel"><div class="ai-heading"><div class="ai-heading-robot" aria-hidden="true"><span class="ai-robot-antenna"></span><span class="ai-robot-face"><i></i><i></i><b></b></span></div><div><h2>Mr Pizza IA</h2><p>Assistente do site</p></div><span class="ai-online"><i></i> Online</span></div><div class="ai-chat" id="ai-chat"><div class="ai-message"><strong>Olá, Doka</strong><p>Posso ajudar em todo o site: horários, equipa, criação e remoção de funcionários. O que precisas?</p></div></div><div class="ai-suggestions"><button data-ai-prompt="João folga dia 23">João folga dia 23</button><button data-ai-prompt="Rita à noite dia 25">Rita à noite dia 25</button></div><form class="ai-input" id="ai-form"><input id="ai-prompt" autocomplete="off" placeholder="Peça qualquer alteração no site..." /><button title="Enviar">↑</button></form><p class="ai-footnote">A IA pede confirmação antes de alterar dados.</p></aside></div><section class="panel coverage-panel" id="coverage-panel"><div class="panel-heading"><div><h2>Cobertura do mês</h2><p>Veja rapidamente se cada dia tem equipa suficiente.</p></div><span id="coverage-status" class="status-label">A calcular...</span></div><div id="coverage-summary" class="coverage-summary"></div><div id="coverage-grid" class="coverage-grid"></div></section></section>
+
+      <section class="view" id="team-view"><div class="page-heading"><div><p class="eyebrow">Pessoas e disponibilidade</p><h1>A sua equipa</h1><p class="subheading" id="team-summary">0 funcionários · 2 turnos por dia</p></div><button class="primary-button" id="add-member"><span>+</span> Adicionar funcionário</button></div><div class="team-controls"><label class="search-box">⌕ <input id="team-search" placeholder="Procurar funcionário..." /></label><label class="team-filter">Escala deste mês <select id="team-shift-filter"><option value="">Todos os turnos</option><option value="morning">Tem turno do dia</option><option value="evening">Tem turno da noite</option><option value="off">Tem folga programada</option></select></label><label class="team-filter">Função <select id="team-role-filter"><option value="">Todas as funções</option></select></label></div><div class="team-cards" id="team-cards"></div></section>
+
+    </main>
+  </div>
+  <dialog class="employee-dialog" id="employee-dialog" aria-labelledby="employee-dialog-title">
+    <form id="employee-form">
+      <h2 id="employee-dialog-title">Adicionar funcionário</h2>
+      <label for="employee-name">Nome</label>
+      <input id="employee-name" name="name" maxlength="80" autocomplete="name" required>
+      <label for="employee-role">Função</label>
+      <input id="employee-role" name="role" maxlength="80" placeholder="Novo membro">
+      <div class="employee-dialog-actions">
+        <button class="outline-button" id="employee-dialog-cancel" type="button">Cancelar</button>
+        <button class="primary-button" type="submit">Adicionar</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog class="employee-dialog" id="employee-edit-dialog" aria-labelledby="employee-edit-dialog-title">
+    <form id="employee-edit-form">
+      <h2 id="employee-edit-dialog-title">Editar funcionário</h2>
+      <input id="edit-employee-id" name="id" type="hidden">
+      <label for="edit-employee-name">Nome</label>
+      <input id="edit-employee-name" name="name" maxlength="80" autocomplete="name" required>
+      <label for="edit-employee-role">Função</label>
+      <input id="edit-employee-role" name="role" maxlength="80" placeholder="Novo membro">
+      <div class="employee-dialog-actions">
+        <button class="outline-button" id="employee-edit-cancel" type="button">Cancelar</button>
+        <button class="primary-button" type="submit">Guardar alterações</button>
+      </div>
+    </form>
+  </dialog>
+  <button class="ai-floating-button" id="open-ai-assistant" type="button" aria-label="Abrir assistente Mr Pizza IA" inert>
+    <span class="ai-floating-speech" aria-hidden="true">Precisas de ajuda?</span>
+    <span class="ai-floating-orb" aria-hidden="true">
+      <span class="ai-robot-antenna"></span>
+      <span class="ai-robot-face"><i></i><i></i><b></b></span>
+    </span>
+    <span class="ai-floating-label">Ajuda IA</span>
+  </button>
+  <div class="toast" id="toast"><span>✓</span><span id="toast-message">Horário atualizado.</span></div>
+  <div class="ai-execution-indicator" id="ai-execution-indicator" aria-live="polite" hidden>
+    <span class="ai-execution-cursor" aria-hidden="true"></span>
+    <strong id="ai-execution-text">A IA está a preparar a tarefa...</strong>
+    <button type="button" id="cancel-ai-execution">Parar animação</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="team-summary.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: mr-pizza-ia
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODELS
+        value: '["openai/gpt-4o"]'
+      - key: OPENROUTER_APP_TITLE
+        value: Mr Pizza
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: APP_TIME_ZONE
+        value: Europe/Lisbon
