@@ -418,6 +418,7 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     assert.equal(confirmed.status, 200);
     assert.match(confirmed.body.message, /1\/7 folgas usadas e 6 restantes/);
     assert.equal(scheduleEntries.some(entry => entry.employee_id === ritaId && entry.work_date === tomorrow && entry.shift === 'off'), true);
+    assert.equal(scheduleEntries.find(entry => entry.employee_id === ritaId && entry.work_date === tomorrow).custom_shift, null);
 
     enqueueCall('prepare_data_operation', {
       operation: 'create_time_off',
@@ -430,6 +431,26 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     assert.equal(duplicate.status, 409);
     assert.equal(duplicate.body.code, 'duplicate_time_off');
     assert.match(duplicate.body.message, /Já existe uma folga/);
+  });
+
+  await t.test('rejects impossible calendar dates before preparing a schedule change', async () => {
+    scheduleEntries.splice(0, scheduleEntries.length);
+    enqueueCall('prepare_data_operation', {
+      operation: 'update_shift_assignment',
+      employee_name: 'Rita Sousa',
+      date: '2026-02-30',
+      shift: 'morning'
+    });
+    const response = await request('/api/chat', {
+      message: 'altera o turno da Rita',
+      history: [],
+      month: 2,
+      year: 2026
+    }, sessionHeaders);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.pendingOperation, null);
+    assert.match(response.body.message, /data válida/);
+    assert.equal(scheduleEntries.length, 0);
   });
 
   await t.test('rechecks the monthly leave limit on confirmation', async () => {
@@ -526,6 +547,7 @@ test('assistant chat, safe navigation, queries and confirmed writes', async t =>
     assert.equal(result.status, 200);
     assert.equal(scheduleMonth.generated, true);
     assert.equal(scheduleEntries.length, employees.filter(employee => employee.status === 'active').length * 30);
+    assert.equal(scheduleEntries.every(entry => entry.custom_shift === null), true);
     const activeIds = new Set(employees.filter(employee => employee.status === 'active').map(employee => employee.id));
     activeIds.forEach(id => {
       assert.equal(scheduleEntries.filter(entry => entry.employee_id === id && entry.shift === 'off').length, 7);

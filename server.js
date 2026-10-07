@@ -363,7 +363,7 @@ function defaultScheduleShift(employeeIndex, day, dayCount) {
 
 function effectiveScheduleShift(schedule, entryByDate, employeeId, employeeIndex, date, dayCount) {
   const stored = entryByDate.get(`${employeeId}|${date}`);
-  if (stored) return stored;
+  if (stored) return typeof stored === 'string' ? stored : stored.custom_shift || stored.shift;
   if (schedule?.cleared) return 'unset';
   return defaultScheduleShift(employeeIndex, Number(date.slice(8, 10)), dayCount);
 }
@@ -425,15 +425,19 @@ async function queryTeamData(session, args, context) {
       }));
       return assistantResult(`Para ${date}, estão em serviço: ${daily.filter(item => item.shift !== 'off').map(item => item.name).join(', ') || 'ninguém'}. De folga: ${daily.filter(item => item.shift === 'off').map(item => item.name).join(', ') || 'ninguém'}. Esta é a escala predefinida ainda não guardada.`);
     }
-    const entries = await supabaseFetch(session.token, `/rest/v1/schedule_entries?schedule_month_id=eq.${schedule.id}&work_date=eq.${date}&select=employee_id,work_date,shift`);
-    const entryByDate = new Map((entries || []).map(entry => [`${entry.employee_id}|${date}`, entry.shift]));
+    const entries = await supabaseFetch(session.token, `/rest/v1/schedule_entries?schedule_month_id=eq.${schedule.id}&work_date=eq.${date}&select=employee_id,work_date,shift,custom_shift`);
+    const entryByDate = new Map((entries || []).map(entry => [`${entry.employee_id}|${date}`, entry]));
     const dayCount = new Date(Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0)).getUTCDate();
     const effective = employees.map((person, index) => ({
       name: person.name,
       shift: effectiveScheduleShift(schedule, entryByDate, person.id, index, date, dayCount)
     }));
     const source = schedule.cleared ? 'nos registos atuais' : 'na escala atual';
-    return assistantResult(`Para ${date}, estão em serviço: ${effective.filter(item => item.shift === 'morning' || item.shift === 'evening').map(item => item.name).join(', ') || 'ninguém'}. De folga: ${effective.filter(item => item.shift === 'off').map(item => item.name).join(', ') || 'ninguém'} (${source}).`);
+    const working = effective.filter(item => item.shift === 'morning' || item.shift === 'evening');
+    const custom = effective.filter(item => item.shift !== 'off' && item.shift !== 'unset'
+      && item.shift !== 'morning' && item.shift !== 'evening');
+    const customText = custom.length ? ` Horários personalizados: ${custom.map(item => `${item.name} (${cleanText(item.shift, 50)})`).join(', ')}.` : '';
+    return assistantResult(`Para ${date}, estão em serviço: ${working.map(item => item.name).join(', ') || 'ninguém'}. De folga: ${effective.filter(item => item.shift === 'off').map(item => item.name).join(', ') || 'ninguém'}.${customText} (${source}).`);
   }
   if (queryType === 'uncovered_shifts') {
     const year = context.year;
@@ -454,8 +458,8 @@ async function queryTeamData(session, args, context) {
         ? `Na escala predefinida, estes dias têm menos de 3 pessoas num dos turnos: ${missingDays.join(', ')}. A escala ainda não foi guardada.`
         : 'A escala predefinida cumpre o mínimo de 3 pessoas em cada turno; ainda não foi guardada.');
     }
-    const entries = await supabaseFetch(session.token, `/rest/v1/schedule_entries?schedule_month_id=eq.${schedule.id}&select=employee_id,work_date,shift`);
-    const entryByDate = new Map((entries || []).map(entry => [`${entry.employee_id}|${entry.work_date}`, entry.shift]));
+    const entries = await supabaseFetch(session.token, `/rest/v1/schedule_entries?schedule_month_id=eq.${schedule.id}&select=employee_id,work_date,shift,custom_shift`);
+    const entryByDate = new Map((entries || []).map(entry => [`${entry.employee_id}|${entry.work_date}`, entry]));
     const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
     for (let day = 1; day <= dayCount; day += 1) {
       const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -997,6 +1001,7 @@ async function executeConfirmedOperation(session, operationId) {
         employee_id: command.employeeId,
         work_date: command.date,
         shift: command.shift,
+        custom_shift: null,
         source: 'ai'
       }
     });
@@ -1027,6 +1032,7 @@ async function executeConfirmedOperation(session, operationId) {
           employee_id: employee.id,
           work_date: date,
           shift,
+          custom_shift: null,
           source: 'automatic'
         });
       }
@@ -1208,7 +1214,7 @@ function sendSchedulePdf(response, body) {
     off: '#e9f5ed',
     unset: '#f3f1ef'
   };
-  const valueLabel = value => value === 'morning' ? 'Dia' : value === 'evening' ? 'Noite' : value === 'off' ? 'Folga' : 'Sem horário';
+  const valueLabel = value => value === 'morning' ? 'Dia' : value === 'evening' ? 'Noite' : value === 'off' ? 'Folga' : value === 'unset' ? 'Sem horário' : cleanText(value, 50);
   const drawCell = (x, y, cellWidth, fill, text, textColor = colors.text, options = {}) => {
     document.rect(x, y, cellWidth, rowHeight).fillAndStroke(fill, colors.line);
     document.fillColor(textColor).fontSize(options.fontSize || 7).font(options.bold ? 'Helvetica-Bold' : 'Helvetica')

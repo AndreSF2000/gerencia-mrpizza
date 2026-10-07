@@ -12,6 +12,7 @@ let currentMonth = initialDate.getMonth();
 let currentYear = initialDate.getFullYear();
 let generated = false;
 const manualOverrides = {};
+const customShiftOverrides = {};
 const persistedScheduleCells = new Set();
 const monthNames = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const dayNames = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB'];
@@ -20,6 +21,7 @@ const aiConversation = [];
 let supabaseClient = null;
 let workspaceId = null;
 let currentUser = null;
+let customShiftColumnAvailable = false;
 let aiExecutionStopped = false;
 let pendingAssistantOperation = null;
 
@@ -74,10 +76,11 @@ function teamRow(person) {
   if (person.id) {
     const today = new Date();
     const todayValue = readCellValue(person, today);
-    shift = todayValue === 'off' ? 'Folga hoje'
+    const customText = customShiftOverrides[scheduleKey(person.name, today)] || '';
+    shift = customText || (todayValue === 'off' ? 'Folga hoje'
       : todayValue === 'unset' ? 'Sem horário'
-        : shiftTimes(today, todayValue);
-    status = todayValue === 'off' ? 'De folga'
+        : shiftTimes(today, todayValue));
+    status = customText ? 'Personalizado' : todayValue === 'off' ? 'De folga'
       : todayValue === 'unset' ? 'Sem horário'
         : 'Em turno';
     const todayKey = formatLocalDate(today);
@@ -168,7 +171,12 @@ function shiftTimes(date, shift) {
   return shift === 'evening' ? '18:00 — 00:00' : '11:00 — 18:00';
 }
 function defaultCell(person, personIndex, date, dates) { const selectedOffDates = new Set(Array.from({ length: Math.min(7, dates.length) }, (_, index) => dates[(Math.floor(index * dates.length / 7) + personIndex) % dates.length].getDate())); if (selectedOffDates.has(date.getDate())) return 'off'; return personIndex % 2 ? 'evening' : 'morning'; }
-function cellMarkup(value, date) { if (value === 'unset') return ''; if (value === 'off') return '<span class="cell-off">Folga</span>'; return `<span class="cell-shift ${value === 'evening' ? 'evening' : ''}">${shiftTimes(date, value).replace(/:00/g, 'h')}</span>`; }
+function cellMarkup(value, date, customText = '') {
+  if (customText) return `<span class="cell-custom" title="${escapeHtml(customText)}">${escapeHtml(customText)}</span>`;
+  if (value === 'unset') return '';
+  if (value === 'off') return '<span class="cell-off">Folga</span>';
+  return `<span class="cell-shift ${value === 'evening' ? 'evening' : ''}">${shiftTimes(date, value).replace(/:00/g, 'h')}</span>`;
+}
 function renderSchedule() {
   document.getElementById('month-label').textContent = `${monthNames[currentMonth]} ${currentYear}`;
   const dates = getMonthDates();
@@ -176,9 +184,10 @@ function renderSchedule() {
   const head = `<div class="month-grid-head" style="${columns}"><div>FUNCIONÁRIO</div>${dates.map(date => `<div>${dayNames[date.getDay()]} ${date.getDate()}</div>`).join('')}</div>`;
   const rows = allEmployees.map((person, personIndex) => `<div class="month-grid-row" style="${columns}"><div class="schedule-person"><span class="avatar ${escapeHtml(person.color)}">${escapeHtml(person.initials)}</span><div><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.role)}</small></div></div>${dates.map(date => {
     const key = scheduleKey(person.name, date);
-    const value = scheduleCleared ? (manualOverrides[key] || 'unset') : (manualOverrides[key] || defaultCell(person, personIndex, date, dates));
-    const label = value === 'unset' ? 'Sem horário' : value === 'off' ? 'Folga' : value === 'evening' ? 'Turno da noite' : 'Turno do dia';
-    return `<button class="schedule-cell editable-cell" data-person="${escapeHtml(person.name)}" data-date="${date.getDate()}" data-value="${value}" title="Editar ${escapeHtml(person.name)} · dia ${date.getDate()}" aria-label="${escapeHtml(person.name)}, dia ${date.getDate()}: ${label}">${cellMarkup(value, date)}</button>`;
+    const customText = customShiftOverrides[key] || '';
+    const value = customText ? 'unset' : scheduleCleared ? (manualOverrides[key] || 'unset') : (manualOverrides[key] || defaultCell(person, personIndex, date, dates));
+    const label = customText || (value === 'unset' ? 'Sem horário' : value === 'off' ? 'Folga' : value === 'evening' ? 'Turno da noite' : 'Turno do dia');
+    return `<button class="schedule-cell editable-cell${customText ? ' has-custom-shift' : ''}" data-person="${escapeHtml(person.name)}" data-date="${date.getDate()}" data-value="${value}" title="Clique para percorrer turnos · duplo clique ou toque prolongado para escrever" aria-label="${escapeHtml(person.name)}, dia ${date.getDate()}: ${escapeHtml(label)}">${cellMarkup(value, date, customText)}</button>`;
   }).join('')}</div>`).join('');
   document.getElementById('monthly-schedule').innerHTML = head + rows;
   renderCoverage();
@@ -190,11 +199,13 @@ async function generateSchedule() {
   if ((generated || scheduleCleared || Object.keys(manualOverrides).length)
     && !window.confirm(`Substituir a escala existente de ${monthNames[currentMonth]} ${currentYear}?`)) return;
   const previousOverrides = { ...manualOverrides };
+  const previousCustomOverrides = { ...customShiftOverrides };
   const previousGenerated = generated;
   const previousCleared = scheduleCleared;
   generated = true;
   scheduleCleared = false;
   Object.keys(manualOverrides).forEach(key => delete manualOverrides[key]);
+  Object.keys(customShiftOverrides).forEach(key => delete customShiftOverrides[key]);
   getMonthDates().forEach(date => {
     allEmployees.forEach((person, personIndex) => {
       const key = scheduleKey(person.name, date);
@@ -203,13 +214,18 @@ async function generateSchedule() {
   });
   const validation = validatePlan([]);
   try {
+    if (customText && !customShiftColumnAvailable) {
+      throw new Error('Apply supabase-migration-schedule-custom-text.sql to enable custom schedule text');
+    }
     await saveState();
     renderSchedule();
     if (validation.valid) toast(`Horário completo de ${monthNames[currentMonth].toLowerCase()} gerado.`);
     else addAiMessage(`<strong>Mr Pizza IA</strong><p>Horário gerado, mas precisa de revisão:<br>${validation.issues.map(escapeHtml).slice(0, 3).join('<br>')}</p>`);
   } catch (error) {
     Object.keys(manualOverrides).forEach(key => delete manualOverrides[key]);
+    Object.keys(customShiftOverrides).forEach(key => delete customShiftOverrides[key]);
     Object.assign(manualOverrides, previousOverrides);
+    Object.assign(customShiftOverrides, previousCustomOverrides);
     generated = previousGenerated;
     scheduleCleared = previousCleared;
     console.error('Schedule generation failed:', error.name);
@@ -217,7 +233,178 @@ async function generateSchedule() {
     toast('Não foi possível guardar o horário. As alterações não foram confirmadas.');
   }
 }
-async function cycleCell(button) { const values = ['morning', 'evening', 'off', 'unset']; const nextValue = values[(values.indexOf(button.dataset.value) + 1) % values.length]; const person = button.dataset.person; const date = new Date(currentYear, currentMonth, Number(button.dataset.date)); const key = scheduleKey(person, date); const hadPreviousValue = Object.prototype.hasOwnProperty.call(manualOverrides, key); const previousValue = manualOverrides[key]; manualOverrides[key] = nextValue; try { await saveState(); renderSchedule(); const labels = { morning: 'turno do dia', evening: 'turno da noite', off: 'folga', unset: 'sem horário' }; toast(`${person}: ${labels[nextValue]} atualizado.`); } catch (error) { if (hadPreviousValue) manualOverrides[key] = previousValue; else delete manualOverrides[key]; console.error('Schedule edit failed:', error.name); renderSchedule(); toast('Não foi possível guardar a alteração. O horário não foi atualizado.'); } }
+let scheduleEditInProgress = false;
+
+function updateScheduleCell(button, person, date, value, customText = '') {
+  const label = customText || (value === 'unset' ? 'Sem horário' : value === 'off' ? 'Folga' : value === 'evening' ? 'Turno da noite' : 'Turno do dia');
+  button.dataset.value = value;
+  button.classList.toggle('has-custom-shift', Boolean(customText));
+  button.title = 'Clique para percorrer turnos · duplo clique ou toque prolongado para escrever';
+  button.setAttribute('aria-label', `${person}, dia ${date.getDate()}: ${label}`);
+  button.innerHTML = cellMarkup(value, date, customText);
+}
+
+async function cycleCell(button) {
+  if (scheduleEditInProgress) return;
+  const values = ['morning', 'evening', 'off', 'unset'];
+  const previousValue = button.dataset.value;
+  const nextValue = values[(values.indexOf(previousValue) + 1) % values.length];
+  const person = button.dataset.person;
+  const date = new Date(currentYear, currentMonth, Number(button.dataset.date));
+  const key = scheduleKey(person, date);
+  const hadPreviousOverride = Object.prototype.hasOwnProperty.call(manualOverrides, key);
+  const previousOverride = manualOverrides[key];
+  const previousCustomOverride = customShiftOverrides[key];
+  scheduleEditInProgress = true;
+  document.querySelectorAll('#monthly-schedule .schedule-cell').forEach(cell => { cell.disabled = true; });
+  manualOverrides[key] = nextValue;
+  delete customShiftOverrides[key];
+  updateScheduleCell(button, person, date, nextValue);
+  try {
+    await saveState();
+    renderCoverage();
+    renderAiSuggestions();
+    renderOverview();
+    const labels = { morning: 'turno do dia', evening: 'turno da noite', off: 'folga', unset: 'sem horário' };
+    toast(`${person}: ${labels[nextValue]} atualizado.`);
+  } catch (error) {
+    if (hadPreviousOverride) manualOverrides[key] = previousOverride;
+    else delete manualOverrides[key];
+    if (previousCustomOverride) customShiftOverrides[key] = previousCustomOverride;
+    updateScheduleCell(button, person, date, previousValue, previousCustomOverride || '');
+    renderCoverage();
+    renderAiSuggestions();
+    renderOverview();
+    console.error('Schedule edit failed:', error.name);
+    toast('Não foi possível guardar a alteração. O horário não foi atualizado.');
+  } finally {
+    scheduleEditInProgress = false;
+    document.querySelectorAll('#monthly-schedule .schedule-cell').forEach(cell => { cell.disabled = false; });
+  }
+}
+
+function beginScheduleCellTextEdit(button) {
+  if (scheduleEditInProgress || button.dataset.editing === 'true') return;
+  const person = button.dataset.person;
+  const date = new Date(currentYear, currentMonth, Number(button.dataset.date));
+  const key = scheduleKey(person, date);
+  const previousValue = button.dataset.value;
+  const previousCustomText = customShiftOverrides[key] || '';
+  const previousMarkup = button.innerHTML;
+  const previousLabel = button.getAttribute('aria-label');
+  button.dataset.editing = 'true';
+  button.setAttribute('contenteditable', 'true');
+  button.classList.add('editing');
+  button.textContent = previousCustomText || (previousValue === 'unset' ? '' : previousValue === 'off' ? 'Folga' : shiftTimes(date, previousValue).replace(/:00/g, 'h'));
+  button.focus();
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(button);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  let finished = false;
+  const cleanUp = () => {
+    button.removeEventListener('keydown', onKeydown);
+    button.removeEventListener('blur', onBlur);
+    button.removeAttribute('contenteditable');
+    button.classList.remove('editing');
+    delete button.dataset.editing;
+  };
+  const onKeydown = event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void finishEditing(button.textContent);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finished = true;
+      cleanUp();
+      button.innerHTML = previousMarkup;
+      button.setAttribute('aria-label', previousLabel);
+    }
+  };
+  const onBlur = () => { void finishEditing(button.textContent); };
+  const finishEditing = async rawText => {
+    if (finished) return;
+    finished = true;
+    cleanUp();
+    const customText = String(rawText || '').trim().slice(0, 50);
+    const hadPreviousOverride = Object.prototype.hasOwnProperty.call(manualOverrides, key);
+    const previousOverride = manualOverrides[key];
+    scheduleEditInProgress = true;
+    document.querySelectorAll('#monthly-schedule .schedule-cell').forEach(cell => { cell.disabled = true; });
+    manualOverrides[key] = 'unset';
+    if (customText) customShiftOverrides[key] = customText;
+    else delete customShiftOverrides[key];
+    updateScheduleCell(button, person, date, 'unset', customText);
+    try {
+      await saveState();
+      renderCoverage();
+      renderAiSuggestions();
+      renderOverview();
+      toast(customText ? `${person}: horário personalizado atualizado.` : `${person}: horário removido.`);
+    } catch (error) {
+      if (hadPreviousOverride) manualOverrides[key] = previousOverride;
+      else delete manualOverrides[key];
+      if (previousCustomText) customShiftOverrides[key] = previousCustomText;
+      else delete customShiftOverrides[key];
+      updateScheduleCell(button, person, date, previousValue, previousCustomText);
+      renderCoverage();
+      renderAiSuggestions();
+      renderOverview();
+      console.error('Custom schedule edit failed:', error.name);
+      toast(error.message.includes('supabase-migration-schedule-custom-text.sql')
+        ? 'Para guardar texto livre, executa primeiro a migração SQL indicada no projeto.'
+        : 'Não foi possível guardar o horário personalizado. A alteração foi cancelada.');
+    } finally {
+      scheduleEditInProgress = false;
+      document.querySelectorAll('#monthly-schedule .schedule-cell').forEach(cell => { cell.disabled = false; });
+    }
+  };
+  button.addEventListener('keydown', onKeydown);
+  button.addEventListener('blur', onBlur);
+}
+
+let scheduleLongPressTimer = null;
+let suppressNextScheduleClick = false;
+const pendingScheduleClicks = new WeakMap();
+const scheduleGrid = document.getElementById('monthly-schedule');
+scheduleGrid.addEventListener('dblclick', event => {
+  const button = event.target.closest('.editable-cell');
+  if (!button) return;
+  clearTimeout(pendingScheduleClicks.get(button));
+  pendingScheduleClicks.delete(button);
+  beginScheduleCellTextEdit(button);
+});
+scheduleGrid.addEventListener('pointerdown', event => {
+  const button = event.target.closest('.editable-cell');
+  if (!button || event.pointerType !== 'touch') return;
+  scheduleLongPressTimer = setTimeout(() => {
+    suppressNextScheduleClick = true;
+    beginScheduleCellTextEdit(button);
+  }, 550);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach(type => scheduleGrid.addEventListener(type, () => {
+  clearTimeout(scheduleLongPressTimer);
+  scheduleLongPressTimer = null;
+}));
+scheduleGrid.addEventListener('click', event => {
+  const button = event.target.closest('.editable-cell');
+  if (!button) return;
+  if (suppressNextScheduleClick) {
+    suppressNextScheduleClick = false;
+    event.preventDefault();
+    return;
+  }
+  if (button.dataset.editing !== 'true') {
+    clearTimeout(pendingScheduleClicks.get(button));
+    const timer = setTimeout(() => {
+      pendingScheduleClicks.delete(button);
+      void cycleCell(button);
+    }, 260);
+    pendingScheduleClicks.set(button, timer);
+  }
+});
 
 function readCellValue(person, date) {
   const key = scheduleKey(person.name, date);
@@ -394,18 +581,37 @@ async function loadSavedState() {
   generated = month?.generated || false;
   scheduleCleared = month?.cleared || false;
   Object.keys(manualOverrides).forEach(key => delete manualOverrides[key]);
+  Object.keys(customShiftOverrides).forEach(key => delete customShiftOverrides[key]);
   persistedScheduleCells.clear();
+  let entries = [];
+  const entryQuery = month
+    ? supabaseClient.from('schedule_entries').select('employee_id,work_date,shift,custom_shift').eq('schedule_month_id', month.id)
+    : supabaseClient.from('schedule_entries').select('custom_shift').limit(0);
+  let { data: loadedEntries, error: entryError } = await entryQuery;
+  if (entryError && (entryError.code === '42703' || entryError.code === 'PGRST204'
+    || /custom_shift.*(does not exist|schema cache)/i.test(entryError.message || ''))) {
+    customShiftColumnAvailable = false;
+    if (month) {
+      const fallback = await supabaseClient.from('schedule_entries')
+        .select('employee_id,work_date,shift').eq('schedule_month_id', month.id);
+      if (fallback.error) throw fallback.error;
+      loadedEntries = fallback.data;
+    }
+  } else if (entryError) {
+    throw entryError;
+  } else {
+    customShiftColumnAvailable = true;
+  }
+  entries = loadedEntries || [];
   if (month) {
-    const { data: entries, error: entryError } = await supabaseClient.from('schedule_entries')
-      .select('employee_id,work_date,shift').eq('schedule_month_id', month.id);
-    if (entryError) throw entryError;
     (entries || []).forEach(entry => {
       const person = allEmployees.find(item => item.id === entry.employee_id);
       if (person) {
         const date = new Date(`${entry.work_date}T00:00:00`);
         const key = scheduleKey(person.name, date);
         manualOverrides[key] = entry.shift;
-        if (entry.shift !== 'unset') persistedScheduleCells.add(key);
+        if (entry.custom_shift) customShiftOverrides[key] = entry.custom_shift;
+        if (entry.shift !== 'unset' || entry.custom_shift) persistedScheduleCells.add(key);
       }
     });
   }
@@ -420,14 +626,23 @@ async function saveState() {
   if (monthError) throw monthError;
   const entries = getMonthDates().flatMap(date => allEmployees.map(person => {
     const value = readCellValue(person, date);
-    return { schedule_month_id: month.id, employee_id: person.id, work_date: formatLocalDate(date), shift: value, source: manualOverrides[scheduleKey(person.name, date)] ? 'manual' : 'automatic' };
+    const key = scheduleKey(person.name, date);
+    const entry = {
+      schedule_month_id: month.id,
+      employee_id: person.id,
+      work_date: formatLocalDate(date),
+      shift: value,
+      source: Object.prototype.hasOwnProperty.call(manualOverrides, key) ? 'manual' : 'automatic'
+    };
+    if (customShiftColumnAvailable) entry.custom_shift = customShiftOverrides[key] || null;
+    return entry;
   })).filter(entry => entry.employee_id);
   if (entries.length) {
     const { error } = await supabaseClient.from('schedule_entries').upsert(entries, { onConflict: 'schedule_month_id,employee_id,work_date' });
     if (error) throw error;
   }
   persistedScheduleCells.clear();
-  entries.filter(entry => entry.shift !== 'unset').forEach(entry => {
+  entries.filter(entry => entry.shift !== 'unset' || entry.custom_shift).forEach(entry => {
     const person = allEmployees.find(employee => employee.id === entry.employee_id);
     if (person) persistedScheduleCells.add(scheduleKey(person.name, new Date(`${entry.work_date}T00:00:00`)));
   });
@@ -923,9 +1138,11 @@ function exportScheduleExcel() {
     const leave = getLeaveStats(person);
     const cells = dates.map(date => {
       const value = readCellValue(person, date);
-      const label = value === 'off' ? 'Folga' : value === 'unset' ? 'Sem horário' : shiftTimes(date, value);
-      const kind = value === 'off' ? 'off' : value === 'unset' ? 'unset' : value;
-      return `<td class="${kind}">${label}</td>`;
+      const key = scheduleKey(person.name, date);
+      const customText = customShiftOverrides[key] || '';
+      const label = customText || (value === 'off' ? 'Folga' : value === 'unset' ? 'Sem horário' : shiftTimes(date, value));
+      const kind = customText ? 'custom' : value === 'off' ? 'off' : value === 'unset' ? 'unset' : value;
+      return `<td class="${kind}">${escapeHtml(label)}</td>`;
     }).join('');
     return `<tr><td class="person"><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.role)}</small></td><td class="leave">${leave.used}/7<br><small>${leave.remaining} restantes</small></td>${cells}</tr>`;
   }).join('');
@@ -953,6 +1170,7 @@ function exportScheduleExcel() {
   td.person small, td.leave small { color: #888; font-size: 8px; margin-top: 3px; }
   td.leave { width: 55px; font-weight: bold; color: #555; }
   td.morning, td.evening, td.off, td.unset { font-weight: bold; }
+  td.custom { color: #576b8c; font-style: italic; }
   </style></head><body><h1>${title}</h1><div class="subtitle">Escala da equipa · 7 folgas mensais por funcionário · Exportado pelo Mr Pizza</div><div class="meta">Gerado em ${new Date().toLocaleDateString('pt-PT')} · ${allEmployees.length} funcionários · ${dates.length} dias</div><div class="legend"><span class="morning">Turno do dia</span><span class="evening">Turno da noite</span><span class="off">Folga</span><span class="unset">Sem horário</span></div><table><thead><tr><th>FUNCIONÁRIO</th><th>FOLGAS</th>${header}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
   const blob = new Blob([`\ufeff${html}`], { type: 'application/vnd.ms-excel;charset=utf-8' });
   const link = document.createElement('a');
@@ -980,7 +1198,7 @@ async function exportSchedulePdf() {
         role: person.role,
         leaveUsed: leave.used,
         leaveRemaining: leave.remaining,
-        schedule: dates.map(date => readCellValue(person, date))
+        schedule: dates.map(date => customShiftOverrides[scheduleKey(person.name, date)] || readCellValue(person, date))
       };
     })
   };
@@ -1004,7 +1222,6 @@ document.getElementById('print-schedule').addEventListener('click', async () => 
   button.textContent = 'A preparar PDF...';
   try { await exportSchedulePdf(); } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = '↓ Baixar PDF'; }
 });
-document.getElementById('monthly-schedule').addEventListener('click', event => { const button = event.target.closest('.editable-cell'); if (button) cycleCell(button); });
 document.getElementById('ai-form').addEventListener('submit', async event => {
   event.preventDefault();
   const input = document.getElementById('ai-prompt');
@@ -1123,6 +1340,7 @@ document.getElementById('sign-out').addEventListener('click', async event => {
     workspaceId = null;
     allEmployees.length = 0;
     Object.keys(manualOverrides).forEach(key => delete manualOverrides[key]);
+    Object.keys(customShiftOverrides).forEach(key => delete customShiftOverrides[key]);
     persistedScheduleCells.clear();
     generated = false;
     scheduleCleared = false;

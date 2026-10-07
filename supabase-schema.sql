@@ -82,13 +82,36 @@ create table if not exists public.schedule_entries (
   employee_id uuid not null references public.employees(id) on delete cascade,
   work_date date not null,
   shift shift_type not null default 'unset',
+  custom_shift varchar(50),
   source schedule_source not null default 'automatic',
   is_overtime boolean not null default false,
   notes text,
+  updated_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (schedule_month_id, employee_id, work_date)
+  unique (schedule_month_id, employee_id, work_date),
+  constraint schedule_entries_custom_shift_check
+    check (custom_shift is null or (btrim(custom_shift) <> '' and shift = 'unset'))
 );
+
+alter table public.schedule_entries
+  add column if not exists updated_by uuid references auth.users(id) on delete set null;
+
+alter table public.schedule_entries
+  add column if not exists custom_shift varchar(50);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'schedule_entries_custom_shift_check'
+      and conrelid = 'public.schedule_entries'::regclass
+  ) then
+    alter table public.schedule_entries
+      add constraint schedule_entries_custom_shift_check
+      check (custom_shift is null or (btrim(custom_shift) <> '' and shift = 'unset'));
+  end if;
+end $$;
 
 create table if not exists public.workspace_settings (
   workspace_id uuid primary key references public.workspaces(id) on delete cascade,
@@ -135,6 +158,16 @@ begin
 end;
 $$;
 
+create or replace function public.set_schedule_entry_audit()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_by = auth.uid();
+  return new;
+end;
+$$;
+
 drop trigger if exists workspaces_updated_at on public.workspaces;
 create trigger workspaces_updated_at
 before update on public.workspaces
@@ -154,6 +187,11 @@ drop trigger if exists schedule_entries_updated_at on public.schedule_entries;
 create trigger schedule_entries_updated_at
 before update on public.schedule_entries
 for each row execute procedure public.set_updated_at();
+
+drop trigger if exists schedule_entries_audit on public.schedule_entries;
+create trigger schedule_entries_audit
+before insert or update on public.schedule_entries
+for each row execute procedure public.set_schedule_entry_audit();
 
 drop trigger if exists workspace_settings_updated_at on public.workspace_settings;
 create trigger workspace_settings_updated_at

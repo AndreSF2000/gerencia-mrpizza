@@ -98,6 +98,15 @@ os termos do Google; várias chaves não aumentam nem contornam a quota do proje
   cabeçalho dos dias mantêm-se visíveis ao percorrer a tabela. O valor vazio é
   guardado como `unset` (um valor permitido pelo enum SQL), nunca como string
   vazia nem `NULL`.
+- Duplo clique (ou toque prolongado no telemóvel) permite escrever um horário
+  personalizado até 50 caracteres. Enter ou clique fora guarda; Escape cancela.
+  O texto é mostrado como texto simples, não executa HTML, e também aparece nas
+  exportações Excel e PDF. Os horários personalizados são informativos e não
+  contam como turno do dia/noite ou folga nos indicadores de cobertura.
+- Ao guardar uma alteração, a aplicação atualiza apenas a célula editada e os
+  resumos relacionados; bloqueia temporariamente as outras células para evitar
+  gravações simultâneas com estados diferentes. A persistência e as políticas
+  de acesso são do Supabase; a aplicação não usa lowdb nem `db.json`.
 - A geração automática respeita as 7 folgas e assinala dias com menos de 3
   pessoas em qualquer dos turnos; substituir uma escala existente exige
   confirmação.
@@ -213,6 +222,15 @@ Os funcionários, alterações manuais, mês selecionado e estado da escala são
 guardados no Supabase. O site não usa `localStorage`; depois do login do
 gerente, os dados são carregados e gravados na base de dados.
 
+As datas de alterações de escala são validadas no formato ISO `YYYY-MM-DD`,
+incluindo confirmação de que o dia existe no calendário, tanto ao preparar a
+proposta da IA como antes de a gravar. O Supabase atualiza `updated_at`, a
+coluna `source` distingue a origem `manual`, `automatic` ou `ai`, e a coluna
+`updated_by` regista, através de um trigger, o ID do utilizador autenticado que
+fez a última alteração, tanto no site como nas alterações da IA. Os registos
+anteriores à migração mantêm `updated_by` vazio, pois não é possível inferir
+com segurança quem os alterou.
+
 ## Supabase
 
 O ficheiro [supabase-schema.sql](./supabase-schema.sql) contém o esquema
@@ -236,6 +254,21 @@ Crie apenas uma conta em **Authentication > Users** para o gerente. O comando
 `create_workspace` usa `auth.uid()`, por isso só funciona numa sessão já
 autenticada; executá-lo diretamente no SQL Editor normalmente resulta em
 `owner_id is null`.
+
+Para uma instalação Supabase já existente, execute
+[supabase-migration-schedule-custom-text.sql](./supabase-migration-schedule-custom-text.sql)
+no SQL Editor para ativar os horários personalizados e o registo do utilizador
+que alterou cada horário. Esta migração pode ser executada mais do que uma vez.
+Para consultar as últimas alterações no SQL Editor:
+
+```sql
+select entry.work_date, employee.name, auth_user.email as updated_by,
+       entry.updated_at, entry.source
+from public.schedule_entries as entry
+join public.employees as employee on employee.id = entry.employee_id
+left join auth.users as auth_user on auth_user.id = entry.updated_by
+order by entry.updated_at desc;
+```
 
 Para criar o espaço diretamente no SQL Editor, substitua o email pelo email
 exato da conta do gerente e execute:
